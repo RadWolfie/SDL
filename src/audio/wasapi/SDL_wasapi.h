@@ -53,6 +53,7 @@ struct SDL_PrivateAudioData
     SDL_bool device_lost;
     void *activation_handler;
     SDL_atomic_t just_activated;
+    SDL_bool isloopback;
 };
 
 /* these increment as default devices change. Opened default devices pick up changes in their threads. */
@@ -63,7 +64,7 @@ extern SDL_atomic_t WASAPI_DefaultCaptureGeneration;
 int WASAPI_PrepDevice(_THIS, const SDL_bool updatestream);
 void WASAPI_RefDevice(_THIS);
 void WASAPI_UnrefDevice(_THIS);
-void WASAPI_AddDevice(const SDL_bool iscapture, const char *devname, WAVEFORMATEXTENSIBLE *fmt, LPCWSTR devid);
+void WASAPI_AddDevice(const SDL_bool iscapture, const char *devname, WAVEFORMATEXTENSIBLE *fmt, LPCWSTR devid, const SDL_bool isloopback);
 void WASAPI_RemoveDevice(const SDL_bool iscapture, LPCWSTR devid);
 
 /* These are functions that are implemented differently for Windows vs WinRT. */

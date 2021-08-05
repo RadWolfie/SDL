@@ -203,11 +203,17 @@ SDLMMNotificationClient_OnDeviceStateChanged(IMMNotificationClient *ithis, LPCWS
                     WAVEFORMATEXTENSIBLE fmt;
                     GetWasapiDeviceInfo(device, &utf8dev, &fmt);
                     if (utf8dev) {
-                        WASAPI_AddDevice(iscapture, utf8dev, &fmt, pwstrDeviceId);
+                        WASAPI_AddDevice(iscapture, utf8dev, &fmt, pwstrDeviceId, SDL_FALSE);
+                        if (!iscapture) {
+                            WASAPI_AddDevice(SDL_TRUE, utf8dev, &fmt, pwstrDeviceId, SDL_TRUE);
+                        }
                         SDL_free(utf8dev);
                     }
                 } else {
                     WASAPI_RemoveDevice(iscapture, pwstrDeviceId);
+                    if (!iscapture) {
+                        WASAPI_RemoveDevice(SDL_TRUE, pwstrDeviceId);
+                    }
                 }
             }
             IMMEndpoint_Release(endpoint);
@@ -360,6 +366,7 @@ typedef struct
     LPWSTR devid;
     char *devname;
     WAVEFORMATEXTENSIBLE fmt;
+    SDL_bool isloopback;
 } EndpointItem;
 
 static int sort_endpoints(const void *_a, const void *_b)
@@ -388,16 +395,24 @@ static int sort_endpoints(const void *_a, const void *_b)
 }
 
 static void
-WASAPI_EnumerateEndpointsForFlow(const SDL_bool iscapture)
+WASAPI_EnumerateEndpointsForFlow(const SDL_bool iscapture, const SDL_bool isloopback)
 {
     IMMDeviceCollection *collection = NULL;
     EndpointItem *items;
     UINT i, total;
+    EDataFlow flow;
+
+    if (iscapture && !isloopback) {
+        flow = eCapture;
+    }
+    else {
+        flow = eRender;
+    }
 
     /* Note that WASAPI separates "adapter devices" from "audio endpoint devices"
        ...one adapter device ("SoundBlaster Pro") might have multiple endpoint devices ("Speakers", "Line-Out"). */
 
-    if (FAILED(IMMDeviceEnumerator_EnumAudioEndpoints(enumerator, iscapture ? eCapture : eRender, DEVICE_STATE_ACTIVE, &collection))) {
+    if (FAILED(IMMDeviceEnumerator_EnumAudioEndpoints(enumerator, flow, DEVICE_STATE_ACTIVE, &collection))) {
         return;
     }
 
@@ -417,6 +432,12 @@ WASAPI_EnumerateEndpointsForFlow(const SDL_bool iscapture)
         if (SUCCEEDED(IMMDeviceCollection_Item(collection, i, &device))) {
             if (SUCCEEDED(IMMDevice_GetId(device, &item->devid))) {
                 GetWasapiDeviceInfo(device, &item->devname, &item->fmt);
+                if (iscapture && isloopback) {
+                    item->isloopback = SDL_TRUE;
+                }
+                else {
+                    item->isloopback = SDL_FALSE;
+                }
             }
             IMMDevice_Release(device);
         }
@@ -429,7 +450,7 @@ WASAPI_EnumerateEndpointsForFlow(const SDL_bool iscapture)
     for (i = 0; i < total; i++) {
         EndpointItem *item = items + i;
         if ((item->devid) && (item->devname)) {
-            WASAPI_AddDevice(iscapture, item->devname, &item->fmt, item->devid);
+            WASAPI_AddDevice(iscapture, item->devname, &item->fmt, item->devid, item->isloopback);
         }
         SDL_free(item->devname);
         CoTaskMemFree(item->devid);
@@ -442,8 +463,9 @@ WASAPI_EnumerateEndpointsForFlow(const SDL_bool iscapture)
 void
 WASAPI_EnumerateEndpoints(void)
 {
-    WASAPI_EnumerateEndpointsForFlow(SDL_FALSE);  /* playback */
-    WASAPI_EnumerateEndpointsForFlow(SDL_TRUE);  /* capture */
+    WASAPI_EnumerateEndpointsForFlow(SDL_FALSE, SDL_FALSE);  /* playback */
+    WASAPI_EnumerateEndpointsForFlow(SDL_TRUE, SDL_FALSE);  /* capture */
+    WASAPI_EnumerateEndpointsForFlow(SDL_TRUE, SDL_TRUE);  /* capture playback (loopback) */
 
     /* if this fails, we just won't get hotplug events. Carry on anyhow. */
     IMMDeviceEnumerator_RegisterEndpointNotificationCallback(enumerator, (IMMNotificationClient *) &notification_client);

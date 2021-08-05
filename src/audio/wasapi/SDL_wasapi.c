@@ -47,6 +47,8 @@ SDL_atomic_t WASAPI_DefaultCaptureGeneration;
 typedef struct DevIdList
 {
     WCHAR *str;
+    SDL_bool iscapture;
+    SDL_bool isloopback;
     struct DevIdList *next;
 } DevIdList;
 
@@ -59,6 +61,20 @@ static const GUID SDL_KSDATAFORMAT_SUBTYPE_PCM = { 0x00000001, 0x0000, 0x0010,{ 
 static const GUID SDL_KSDATAFORMAT_SUBTYPE_IEEE_FLOAT = { 0x00000003, 0x0000, 0x0010,{ 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 } };
 
 
+static DevIdList*
+WASAPI_FindDevice(const SDL_bool iscapture, LPCWSTR devid)
+{
+    DevIdList* devidlist;
+    for (devidlist = deviceid_list; devidlist; devidlist = devidlist->next) {
+        if (SDL_wcscmp(devidlist->str, devid) == 0) {
+            if (devidlist->iscapture == iscapture) {
+                return devidlist;  /* devid found */
+            }
+        }
+    }
+    return NULL;
+}
+
 void
 WASAPI_RemoveDevice(const SDL_bool iscapture, LPCWSTR devid)
 {
@@ -68,14 +84,17 @@ WASAPI_RemoveDevice(const SDL_bool iscapture, LPCWSTR devid)
     for (i = deviceid_list; i; i = next) {
         next = i->next;
         if (SDL_wcscmp(i->str, devid) == 0) {
-            if (prev) {
-                prev->next = next;
-            } else {
-                deviceid_list = next;
+            if (i->iscapture == iscapture) {
+                if (prev) {
+                    prev->next = next;
+                }
+                else {
+                    deviceid_list = next;
+                }
+                SDL_RemoveAudioDevice(iscapture, i->str);
+                SDL_free(i->str);
+                SDL_free(i);
             }
-            SDL_RemoveAudioDevice(iscapture, i->str);
-            SDL_free(i->str);
-            SDL_free(i);
         }
         prev = i;
     }
@@ -104,7 +123,7 @@ WaveFormatToSDLFormat(WAVEFORMATEX *waveformat)
 }
 
 void
-WASAPI_AddDevice(const SDL_bool iscapture, const char *devname, WAVEFORMATEXTENSIBLE *fmt, LPCWSTR devid)
+WASAPI_AddDevice(const SDL_bool iscapture, const char *devname, WAVEFORMATEXTENSIBLE *fmt, LPCWSTR devid, const SDL_bool isloopback)
 {
     DevIdList *devidlist;
     SDL_AudioSpec spec;
@@ -115,10 +134,9 @@ WASAPI_AddDevice(const SDL_bool iscapture, const char *devname, WAVEFORMATEXTENS
        available and switch automatically. (!!! FIXME...?) */
 
     /* see if we already have this one. */
-    for (devidlist = deviceid_list; devidlist; devidlist = devidlist->next) {
-        if (SDL_wcscmp(devidlist->str, devid) == 0) {
-            return;  /* we already have this. */
-        }
+    devidlist = WASAPI_FindDevice(iscapture, devid);
+    if (devidlist) {
+        return;  /* we already have this. */
     }
 
     devidlist = (DevIdList *) SDL_malloc(sizeof (*devidlist));
@@ -133,6 +151,8 @@ WASAPI_AddDevice(const SDL_bool iscapture, const char *devname, WAVEFORMATEXTENS
     }
 
     devidlist->str = (WCHAR *) devid;
+    devidlist->iscapture = iscapture;
+    devidlist->isloopback = isloopback;
     devidlist->next = deviceid_list;
     deviceid_list = devidlist;
 
@@ -140,7 +160,15 @@ WASAPI_AddDevice(const SDL_bool iscapture, const char *devname, WAVEFORMATEXTENS
     spec.channels = (Uint8)fmt->Format.nChannels;
     spec.freq = fmt->Format.nSamplesPerSec;
     spec.format = WaveFormatToSDLFormat((WAVEFORMATEX *) fmt);
-    SDL_AddAudioDevice(iscapture, devname, &spec, (void *) devid);
+
+    char* altname = devname;
+
+    if (isloopback) {
+        size_t altname_size = SDL_strlen(devname) + (sizeof(char) * 12);
+        altname = SDL_malloc(altname_size);
+        SDL_snprintf(altname, altname_size, "%s (loopback)", devname);
+    }
+    SDL_AddAudioDevice(iscapture, altname, &spec, (void *) devid);
 }
 
 static void
@@ -573,6 +601,9 @@ WASAPI_PrepDevice(_THIS, const SDL_bool updatestream)
 #endif
 
     streamflags |= AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+    if (this->hidden->isloopback) {
+        streamflags |= AUDCLNT_STREAMFLAGS_LOOPBACK;
+    }
     ret = IAudioClient_Initialize(client, sharemode, streamflags, 0, 0, waveformat, NULL);
     if (FAILED(ret)) {
         return WIN_SetErrorFromHRESULT("WASAPI can't initialize audio client", ret);
@@ -665,6 +696,10 @@ WASAPI_OpenDevice(_THIS, void *handle, const char *devname, int iscapture)
         this->hidden->devid = SDL_wcsdup(devid);
         if (!this->hidden->devid) {
             return SDL_OutOfMemory();
+        }
+        DevIdList* devidItem = WASAPI_FindDevice(iscapture, devid);
+        if (devidItem) {
+            this->hidden->isloopback = devidItem->isloopback;
         }
     }
 
